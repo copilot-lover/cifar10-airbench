@@ -29,7 +29,16 @@ torch.backends.cudnn.benchmark = True
 #############################################
 
 @torch.compile
-def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
+def                     v = zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
+                    ###################################
+                    vnorm = v.norm(dim=(-2,-1), keepdim=True)
+                    v_mean = torch.mean(v * v, dim=-1, keepdim=True) if p.size(-2) >= p.size(-1) else torch.mean(v * v, dim=-2, keepdim=True)
+                    second_momentum_buffer.lerp_(v_mean, 1 - beta2)
+                    step_size = 1 / second_momentum_buffer.sqrt().clamp_min(1e-10)
+                    v.mul_(step_size)
+                    vnorm_new = v.norm(dim=(-2,-1), keepdim=True)
+                    v.mul_(vnorm / (vnorm_new.clamp_min(1e-10)))
+                    ####################################
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
     quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
@@ -53,21 +62,22 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
         X = X.T
     return X
 
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+class NorMuon(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False, beta2=0.6):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
             raise ValueError(f"Invalid momentum value: {momentum}")
         if nesterov and momentum <= 0:
             raise ValueError("Nesterov momentum requires a momentum")
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, beta2=beta2)
         super().__init__(params, defaults)
 
     def step(self):
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
+            beta2 = group["beta2"]
             for p in group["params"]:
                 g = p.grad
                 if g is None:
@@ -76,6 +86,8 @@ class Muon(torch.optim.Optimizer):
 
                 if "momentum_buffer" not in state.keys():
                     state["momentum_buffer"] = torch.zeros_like(g)
+                    state["second_momentum_buffer"] = torch.zeros_like(grad[..., 0:1]) if p.size(-2) >= p.size(-1) else torch.zeros_like(grad[0:1, ...])
+                    second_momentum_buffer = state["second_momentum_buffer"] 
                 buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(g)
                 g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
@@ -359,7 +371,7 @@ def main(run, model):
                      dict(params=norm_biases,         lr=bias_lr, weight_decay=wd/bias_lr),
                      dict(params=[model.head.weight], lr=head_lr, weight_decay=wd/head_lr)]
     optimizer1 = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True, fused=True)
-    optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True)
+    optimizer2 = NorMuon(filter_params, lr=0.24, momentum=0.6, nesterov=True, beta2=0.6)
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
         for group in opt.param_groups:
