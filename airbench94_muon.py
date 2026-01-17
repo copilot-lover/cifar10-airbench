@@ -29,7 +29,7 @@ torch.backends.cudnn.benchmark = True
 #############################################
 
 @torch.compile
-def                     v = zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
+def v = zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
                     ###################################
                     vnorm = v.norm(dim=(-2,-1), keepdim=True)
                     v_mean = torch.mean(v * v, dim=-1, keepdim=True) if p.size(-2) >= p.size(-1) else torch.mean(v * v, dim=-2, keepdim=True)
